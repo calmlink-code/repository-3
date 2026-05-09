@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ロボット教室 共有管理システム</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="login-shell" id="login-screen">
+      <div class="login-card">
+        <div class="login-copy">
+          <p class="eyebrow">Robot School Shared Console</p>
+          <h1>ロボット教室<br />共有管理システム</h1>
+          <p>
+            先生、本部、教室責任者が同じ画面で出席、集金、未収、引き継ぎを確認できる
+            Web専用の管理画面です。
+          </p>
+        </div>
+
+        <form id="login-form" class="login-form">
+          <h2>ログイン</h2>
+          <p class="form-intro">
+            マスタ管理の「先生アカウント登録」で作成したメールアドレスとパスワードを使います。
+          </p>
+          <label>
+            メールアドレス
+            <input type="email" id="login-email" placeholder="teacher@example.com" required />
+          </label>
+          <label>
+            パスワード
+            <input type="password" id="login-password" placeholder="8文字以上推奨" required />
+          </label>
+          <button type="submit" class="primary-btn">システムに入る</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="app-shell hidden" id="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <p class="brand-kicker">Shared School Ops</p>
+          <h1>ロボット教室<br />共有管理システム</h1>
+        </div>
+
+        <nav class="nav">
+          <button class="nav-item is-active" data-view="dashboard">ダッシュボード</button>
+          <button class="nav-item" data-view="attendance">出席管理</button>
+          <button class="nav-item" data-view="billing">集金管理</button>
+          <button class="nav-item" data-view="sales">売上管理</button>
+          <button class="nav-item" data-view="handover">引き継ぎ</button>
+          <button class="nav-item" data-view="master">マスタ管理</button>
+        </nav>
+
+        <div class="sidebar-card">
+          <p class="sidebar-label">ログイン中</p>
+          <strong id="current-user-name">-</strong>
+          <span id="current-user-role">-</span>
+          <span id="current-user-classroom">-</span>
+        </div>
+
+        <div class="sidebar-actions">
+          <button class="ghost-btn" id="export-student-list-btn">生徒一覧Excel出力</button>
+          <button class="ghost-btn" id="export-sales-report-btn">売上表Excel出力</button>
+          <button class="ghost-btn" id="export-data-btn">データ書き出し</button>
+          <label class="ghost-btn upload-btn">
+            データ読込
+            <input type="file" id="import-data-input" accept="application/json" hidden />
+          </label>
+          <button class="ghost-btn danger" id="reset-data-btn">初期データに戻す</button>
+          <button class="ghost-btn" id="logout-btn">ログアウト</button>
+        </div>
+
+        <div class="sidebar-card save-card">
+          <p class="sidebar-label">保存状況</p>
+          <strong id="save-location-label">このブラウザ内に保存</strong>
+          <span id="save-location-detail">まだ外部バックアップ先は未設定です。</span>
+          <div class="save-card-actions">
+            <button class="ghost-btn light" id="choose-backup-file-btn">保存先ファイルを選ぶ</button>
+            <button class="ghost-btn light" id="save-backup-file-btn">今すぐ外部保存</button>
+            <button class="ghost-btn light" id="create-restore-point-btn">復元点を作る</button>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Web専用 完成版ローカルアプリ</p>
+            <h2 id="view-title">ダッシュボード</h2>
+            <p class="topbar-meta" id="topbar-meta"></p>
+          </div>
+          <div class="topbar-actions">
+            <select id="global-classroom-filter"></select>
+            <button class="primary-btn" id="quick-add-btn">新しい登録</button>
+          </div>
+        </header>
+
+        <section class="view is-visible" id="dashboard-view">
+          <div class="hero-panel">
+            <div>
+              <p class="hero-kicker">Today Snapshot</p>
+              <h3>最新状況の共有</h3>
+              <p>今日の出席、今月の未収、引き継ぎメモ</p>
+            </div>
+            <div class="hero-note" id="hero-note"></div>
+          </div>
+
+          <div class="stats-grid" id="stats-grid"></div>
+
+          <div class="content-grid">
+            <section class="panel wide">
+              <div class="panel-head">
+                <h3>教室別サマリー</h3>
+                <span>出席・未収・対応状況</span>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>教室</th>
+                    <th>在籍</th>
+                    <th>今月出席</th>
+                    <th>今月欠席</th>
+                    <th>未収</th>
+                    <th>状態</th>
+                  </tr>
+                </thead>
+                <tbody id="classroom-summary-body"></tbody>
+              </table>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>最新の引き継ぎ</h3>
+                <span>先生間メモ</span>
+              </div>
+              <ul class="feed" id="latest-handover-list"></ul>
+            </section>
+          </div>
+
+          <section class="panel backup-panel">
+            <div class="panel-head">
+              <h3>保存先と復元</h3>
+              <span>最新情報のみ表示</span>
+            </div>
+            <p class="backup-summary" id="backup-summary">
+              このブラウザ内に自動で復元点を保存します。さらに外部バックアップファイルを設定すると、端末トラブル時も戻しやすくなります。
+            </p>
+          </section>
+        </section>
+
+        <section class="view" id="attendance-view">
+          <div class="subview-switch">
+            <button class="subview-btn is-active" data-section="attendance" data-subview="entry">出席登録</button>
+            <button class="subview-btn" data-section="attendance" data-subview="list">出席一覧</button>
+          </div>
+
+          <div class="section-grid view-panel is-visible" data-section-panel="attendance" data-subview-panel="entry">
+            <section class="panel form-panel">
+              <div class="panel-head">
+                <h3>出席を登録</h3>
+                <span>授業後すぐ入力</span>
+              </div>
+              <form id="attendance-form" class="entry-form">
+                <div class="form-grid">
+                  <label>
+                    日付
+                    <input type="date" name="date" required />
+                  </label>
+                  <label>
+                    教室
+                    <select name="classroomId" required></select>
+                  </label>
+                  <label>
+                    生徒
+                    <select name="studentId" required></select>
+                  </label>
+                  <label>
+                    出席状況
+                    <select name="status" required>
+                      <option value="出席">出席</option>
+                      <option value="欠席">欠席</option>
+                      <option value="遅刻">遅刻</option>
+                      <option value="振替">振替</option>
+                      <option value="休会">休会</option>
+                    </select>
+                  </label>
+                  <label>
+                    振替予定
+                    <input type="text" name="transfer" placeholder="例: 木曜クラス" />
+                  </label>
+                  <label>
+                    担当
+                    <input type="text" name="teacher" required />
+                  </label>
+                </div>
+                <label>
+                  備考
+                  <textarea name="note" rows="3" placeholder="保護者連絡、教材準備など"></textarea>
+                </label>
+                <div class="form-actions">
+                  <button type="submit" class="primary-btn" id="attendance-submit-btn">出席を追加</button>
+                  <button type="button" class="ghost-inline-btn hidden" id="attendance-cancel-btn">編集をやめる</button>
+                </div>
+              </form>
+            </section>
+          </div>
+
+          <div class="view-panel" data-section-panel="attendance" data-subview-panel="list">
+            <div class="stacked-panels">
+              <section class="panel">
+                <div class="panel-head">
+                  <h3>その日の出席予定者</h3>
+                  <span id="scheduled-students-meta">-</span>
+                </div>
+                <div class="scheduled-list" id="scheduled-students-list"></div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head">
+                  <h3>出席一覧</h3>
+                  <span>最新50件</span>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>日付</th>
+                      <th>教室</th>
+                      <th>生徒</th>
+                      <th>状況</th>
+                      <th>集金状況</th>
+                      <th>振替</th>
+                      <th>担当</th>
+                      <th>備考</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="attendance-table-body"></tbody>
+                </table>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="billing-view">
+          <div class="subview-switch">
+            <button class="subview-btn is-active" data-section="billing" data-subview="entry">集金登録</button>
+            <button class="subview-btn" data-section="billing" data-subview="list">集金一覧</button>
+          </div>
+
+          <div class="section-grid view-panel is-visible" data-section-panel="billing" data-subview-panel="entry">
+            <section class="panel form-panel">
+              <div class="panel-head">
+                <h3>請求・入金を登録</h3>
+                <span>未収は自動計算</span>
+              </div>
+              <form id="billing-form" class="entry-form">
+                <div class="form-grid">
+                  <label>
+                    対象月
+                    <input type="month" name="month" required />
+                  </label>
+                  <label>
+                    教室
+                    <select name="classroomId" required></select>
+                  </label>
+                  <label>
+                    生徒
+                    <select name="studentId" required></select>
+                  </label>
+                  <label>
+                    請求額
+                    <input type="number" name="billed" min="0" required readonly />
+                  </label>
+                  <label>
+                    入金額
+                    <input type="number" name="paid" min="0" required />
+                  </label>
+                  <label>
+                    入金日
+                    <input type="date" name="paidDate" />
+                  </label>
+                  <label>
+                    支払方法
+                    <select name="method" required>
+                      <option value="口座振替">口座振替</option>
+                      <option value="現金">現金</option>
+                      <option value="振込">振込</option>
+                      <option value="その他">その他</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="edit-note hidden" id="billing-edit-note"></div>
+                <div class="form-actions hidden" id="billing-quick-actions">
+                  <button type="button" class="ghost-inline-btn" id="billing-mark-unpaid-btn">未集金に戻す</button>
+                  <button type="button" class="ghost-inline-btn" id="billing-move-current-month-btn">今月へ変更</button>
+                  <button type="button" class="ghost-inline-btn" id="billing-fill-paid-btn">全額入金にする</button>
+                </div>
+                <label>
+                  対応メモ
+                  <textarea name="note" rows="3" placeholder="再案内予定、分割対応など"></textarea>
+                </label>
+                <div class="form-actions">
+                  <button type="submit" class="primary-btn" id="billing-submit-btn">集金情報を追加</button>
+                  <button type="button" class="ghost-inline-btn hidden" id="billing-cancel-btn">編集をやめる</button>
+                </div>
+              </form>
+            </section>
+
+            <section class="panel form-panel">
+              <div class="panel-head">
+                <h3>手動売上登録</h3>
+                <span>集金管理から入力</span>
+              </div>
+              <p class="form-intro">
+                体験費、教材費、臨時売上などを集金管理の中からそのまま登録できます。
+              </p>
+              <form id="billing-incidental-sale-form" class="entry-form">
+                <label>
+                  過去の登録から選ぶ
+                  <select name="templateId" id="billing-incidental-sale-template-select">
+                    <option value="">選択してください</option>
+                  </select>
+                </label>
+                <div class="form-grid">
+                  <label>
+                    対象月
+                    <input type="month" name="month" required />
+                  </label>
+                  <label>
+                    名前
+                    <input type="text" name="name" required />
+                  </label>
+                  <label>
+                    内容
+                    <input type="text" name="content" required />
+                  </label>
+                  <label>
+                    金額
+                    <input type="number" name="amount" min="0" required />
+                  </label>
+                </div>
+                <label>
+                  備考
+                  <textarea name="note" rows="3" placeholder="入金経路、補足など"></textarea>
+                </label>
+                <div class="form-actions">
+                  <button type="submit" class="primary-btn" id="billing-incidental-sale-submit-btn">手動売上を追加</button>
+                  <button type="button" class="ghost-inline-btn hidden" id="billing-incidental-sale-cancel-btn">編集をやめる</button>
+                </div>
+              </form>
+            </section>
+          </div>
+
+          <div class="view-panel" data-section-panel="billing" data-subview-panel="list">
+            <div class="stacked-panels">
+              <section class="panel">
+                <div class="panel-head">
+                  <h3>集金一覧</h3>
+                  <span>未入金の生徒を含めて確認</span>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>対象月</th>
+                      <th>生徒</th>
+                      <th>請求</th>
+                      <th>入金</th>
+                      <th>不足額</th>
+                      <th>前月未入金</th>
+                      <th>集金状況</th>
+                      <th>メモ</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="billing-table-body"></tbody>
+                </table>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head">
+                  <h3>手動売上一覧</h3>
+                  <span>集金管理から確認</span>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>対象月</th>
+                      <th>名前</th>
+                      <th>内容</th>
+                      <th>金額</th>
+                      <th>備考</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="billing-incidental-sale-table-body"></tbody>
+                </table>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="sales-view">
+          <div class="section-grid">
+            <section class="panel form-panel">
+              <div class="panel-head">
+                <h3>売上サマリー</h3>
+                <span>月締めと年度末締め</span>
+              </div>
+              <div class="stats-grid compact-stats" id="sales-stats-grid"></div>
+            </section>
+          </div>
+
+          <div class="content-grid">
+            <section class="panel wide">
+              <div class="panel-head">
+                <h3>月締め一覧</h3>
+                <span id="sales-monthly-meta">-</span>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>対象月</th>
+                    <th>請求額</th>
+                    <th>入金額</th>
+                    <th>未入金額</th>
+                    <th>入金件数</th>
+                    <th>未入金件数</th>
+                  </tr>
+                </thead>
+                <tbody id="sales-monthly-body"></tbody>
+              </table>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>年度末締め</h3>
+                <span id="sales-fiscal-meta">-</span>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>年度</th>
+                    <th>請求額</th>
+                    <th>入金額</th>
+                    <th>未入金額</th>
+                    <th>入金件数</th>
+                    <th>未入金件数</th>
+                  </tr>
+                </thead>
+                <tbody id="sales-fiscal-body"></tbody>
+              </table>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="handover-view">
+          <div class="subview-switch">
+            <button class="subview-btn is-active" data-section="handover" data-subview="entry">引き継ぎ登録</button>
+            <button class="subview-btn" data-section="handover" data-subview="list">引き継ぎ一覧</button>
+          </div>
+
+          <div class="section-grid view-panel is-visible" data-section-panel="handover" data-subview-panel="entry">
+            <section class="panel form-panel">
+              <div class="panel-head">
+                <h3>引き継ぎを登録</h3>
+                <span>先生同士の共有メモ</span>
+              </div>
+              <form id="handover-form" class="entry-form">
+                <div class="form-grid">
+                  <label>
+                    教室
+                    <select name="classroomId" required></select>
+                  </label>
+                  <label>
+                    種別
+                    <select name="category" required>
+                      <option value="欠席フォロー">欠席フォロー</option>
+                      <option value="保護者対応">保護者対応</option>
+                      <option value="集金フォロー">集金フォロー</option>
+                      <option value="授業準備">授業準備</option>
+                    </select>
+                  </label>
+                  <label>
+                    対象生徒
+                    <select name="studentId"></select>
+                  </label>
+                  <label>
+                    投稿者
+                    <input type="text" name="author" required />
+                  </label>
+                </div>
+                <label>
+                  タイトル
+                  <input type="text" name="title" required />
+                </label>
+                <label>
+                  内容
+                  <textarea name="body" rows="4" required placeholder="対応内容、次の先生への依頼など"></textarea>
+                </label>
+                <div class="form-actions">
+                  <button type="submit" class="primary-btn" id="handover-submit-btn">引き継ぎを追加</button>
+                  <button type="button" class="ghost-inline-btn hidden" id="handover-cancel-btn">編集をやめる</button>
+                </div>
+              </form>
+            </section>
+          </div>
+
+          <div class="view-panel" data-section-panel="handover" data-subview-panel="list">
+            <section class="panel">
+              <div class="panel-head">
+                <h3>引き継ぎ一覧</h3>
+                <span>新しい順</span>
+              </div>
+              <div class="handover-grid" id="handover-grid"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="master-view">
+          <div class="subview-switch">
+            <button class="subview-btn is-active" data-section="master" data-subview="entry">登録画面</button>
+            <button class="subview-btn" data-section="master" data-subview="list">一覧画面</button>
+          </div>
+
+          <div class="view-panel is-visible" data-section-panel="master" data-subview-panel="entry">
+            <div class="section-grid">
+              <section class="panel form-panel">
+                <div class="panel-head">
+                  <h3>生徒登録</h3>
+                  <span>教室所属の生徒を追加</span>
+                </div>
+                <p class="form-intro">
+                  生徒は教室にひも付けて登録します。月謝もここで入れておくと集金管理が見やすくなります。
+                </p>
+                <form id="student-form" class="entry-form">
+                  <div class="form-grid">
+                    <label>
+                      生徒名
+                      <input type="text" name="name" required />
+                    </label>
+                    <label>
+                      教室
+                      <select name="classroomId" required></select>
+                    </label>
+                    <label>
+                      クラス
+                      <select name="classOptionId" required></select>
+                    </label>
+                    <label>
+                      在籍状況
+                      <select name="status" required>
+                        <option value="在籍">在籍</option>
+                        <option value="休会">休会</option>
+                        <option value="体験">体験</option>
+                      </select>
+                    </label>
+                    <label>
+                      開始月
+                      <input type="month" name="startMonth" />
+                    </label>
+                    <label>
+                      月謝
+                      <input type="number" name="tuition" min="0" required />
+                    </label>
+                  </div>
+                  <label>
+                    保護者名
+                    <input type="text" name="guardian" />
+                  </label>
+                  <div class="form-grid">
+                    <label>
+                      電話番号
+                      <input type="text" name="phone" placeholder="090-1234-5678" />
+                    </label>
+                    <label>
+                      メールアドレス
+                      <input type="email" name="email" placeholder="family@example.com" />
+                    </label>
+                  </div>
+                  <fieldset class="weekday-fieldset">
+                    <legend>通塾曜日</legend>
+                    <div class="weekday-grid">
+                      <label><input type="checkbox" name="weekday" value="月" />月</label>
+                      <label><input type="checkbox" name="weekday" value="火" />火</label>
+                      <label><input type="checkbox" name="weekday" value="水" />水</label>
+                      <label><input type="checkbox" name="weekday" value="木" />木</label>
+                      <label><input type="checkbox" name="weekday" value="金" />金</label>
+                      <label><input type="checkbox" name="weekday" value="土" />土</label>
+                      <label><input type="checkbox" name="weekday" value="日" />日</label>
+                    </div>
+                  </fieldset>
+                  <fieldset class="weekday-fieldset hidden" id="saturday-slots-fieldset">
+                    <legend>土曜日の時間帯</legend>
+                    <div class="weekday-grid saturday-slot-grid">
+                      <label><input type="checkbox" name="saturdaySlot" value="10時" />10時</label>
+                      <label><input type="checkbox" name="saturdaySlot" value="13時" />13時</label>
+                      <label><input type="checkbox" name="saturdaySlot" value="15時" />15時</label>
+                      <label><input type="checkbox" name="saturdaySlot" value="17時" />17時</label>
+                    </div>
+                  </fieldset>
+                  <div class="form-actions">
+                    <button type="submit" class="primary-btn" id="student-submit-btn">生徒を追加</button>
+                    <button type="button" class="ghost-inline-btn hidden" id="student-cancel-btn">編集をやめる</button>
+                  </div>
+                </form>
+              </section>
+
+              <section class="panel form-panel">
+                <div class="panel-head">
+                  <h3>教室登録</h3>
+                  <span>まずここで教室を作成</span>
+                </div>
+                <p class="form-intro">
+                  教室名、担当者、曜日を登録します。先生登録の前に教室を作ると分かりやすいです。
+                </p>
+                <form id="classroom-form" class="entry-form">
+                  <div class="form-grid">
+                    <label>
+                      教室名
+                      <input type="text" name="name" required />
+                    </label>
+                    <label>
+                      担当者
+                      <input type="text" name="manager" required />
+                    </label>
+                    <label>
+                      開講曜日
+                      <input type="text" name="days" placeholder="例: 火・木" />
+                    </label>
+                  </div>
+                  <div class="form-actions">
+                    <button type="submit" class="primary-btn" id="classroom-submit-btn">教室を追加</button>
+                    <button type="button" class="ghost-inline-btn hidden" id="classroom-cancel-btn">編集をやめる</button>
+                  </div>
+                </form>
+              </section>
+
+              <section class="panel form-panel">
+                <div class="panel-head">
+                  <h3>先生アカウント登録</h3>
+                  <span>ログイン情報もここで作成</span>
+                </div>
+                <p class="form-intro">
+                  先生名、メールアドレス、パスワード、権限、担当教室を登録します。登録したらすぐログインできます。
+                </p>
+                <form id="teacher-form" class="entry-form">
+                  <div class="form-grid">
+                    <label>
+                      先生名
+                      <input type="text" name="name" required />
+                    </label>
+                    <label>
+                      メールアドレス
+                      <input type="email" name="email" required />
+                    </label>
+                    <label>
+                      パスワード
+                      <input type="password" name="password" required />
+                    </label>
+                    <label>
+                      権限
+                      <select name="role" required>
+                        <option value="先生">先生</option>
+                        <option value="教室責任者">教室責任者</option>
+                        <option value="本部">本部</option>
+                      </select>
+                    </label>
+                    <label>
+                      担当教室
+                      <select name="classroomId" required></select>
+                    </label>
+                  </div>
+                  <div class="form-actions">
+                    <button type="submit" class="primary-btn" id="teacher-submit-btn">先生アカウントを追加</button>
+                    <button type="button" class="ghost-inline-btn hidden" id="teacher-cancel-btn">編集をやめる</button>
+                  </div>
+                </form>
+              </section>
+            </div>
+
+            <div class="section-grid master-second-grid">
+              <section class="panel form-panel">
+                <div class="panel-head">
+                  <h3>クラス登録</h3>
+                  <span>生徒入力用のプルダウン候補</span>
+                </div>
+                <p class="form-intro">
+                  生徒の所属クラス名をここで統一します。生徒登録ではこの一覧から選ぶだけにします。
+                </p>
+                <form id="class-option-form" class="entry-form">
+                  <div class="form-grid">
+                    <label>
+                      クラス名
+                      <input type="text" name="name" required />
+                    </label>
+                    <label>
+                      表示順
+                      <input type="number" name="sortOrder" min="1" placeholder="例: 1" />
+                    </label>
+                  </div>
+                  <div class="form-actions">
+                    <button type="submit" class="primary-btn" id="class-option-submit-btn">クラスを追加</button>
+                    <button type="button" class="ghost-inline-btn hidden" id="class-option-cancel-btn">編集をやめる</button>
+                  </div>
+                </form>
+              </section>
+
+              <section class="panel form-panel">
+                <div class="panel-head">
+                  <h3>手動売上登録</h3>
+                  <span>通常月謝以外の売上</span>
+                </div>
+                <p class="form-intro">
+                  体験費、教材費、臨時売上などを登録します。売上管理と売上表Excelに反映されます。
+                </p>
+                <form id="incidental-sale-form" class="entry-form">
+                  <label>
+                    過去の登録から選ぶ
+                    <select name="templateId" id="incidental-sale-template-select">
+                      <option value="">選択してください</option>
+                    </select>
+                  </label>
+                  <div class="form-grid">
+                    <label>
+                      対象月
+                      <input type="month" name="month" required />
+                    </label>
+                    <label>
+                      名前
+                      <input type="text" name="name" required />
+                    </label>
+                    <label>
+                      内容
+                      <input type="text" name="content" required />
+                    </label>
+                    <label>
+                      金額
+                      <input type="number" name="amount" min="0" required />
+                    </label>
+                  </div>
+                  <label>
+                    備考
+                    <textarea name="note" rows="3" placeholder="入金経路、補足など"></textarea>
+                  </label>
+                  <div class="form-actions">
+                    <button type="submit" class="primary-btn" id="incidental-sale-submit-btn">手動売上を追加</button>
+                    <button type="button" class="ghost-inline-btn hidden" id="incidental-sale-cancel-btn">編集をやめる</button>
+                  </div>
+                </form>
+              </section>
+
+              <section class="panel form-panel">
+                <div class="panel-head">
+                  <h3>決算月設定</h3>
+                  <span>年度末締め用</span>
+                </div>
+                <p class="form-intro">
+                  決算月を設定すると、売上管理の年度末締めをその月基準で集計します。
+                </p>
+                <form id="settings-form" class="entry-form">
+                  <div class="form-grid">
+                    <label>
+                      決算月
+                      <select name="fiscalClosingMonth" id="fiscal-closing-month-select">
+                        <option value="1">1月</option>
+                        <option value="2">2月</option>
+                        <option value="3">3月</option>
+                        <option value="4">4月</option>
+                        <option value="5">5月</option>
+                        <option value="6">6月</option>
+                        <option value="7">7月</option>
+                        <option value="8">8月</option>
+                        <option value="9">9月</option>
+                        <option value="10">10月</option>
+                        <option value="11">11月</option>
+                        <option value="12">12月</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="form-actions">
+                    <button type="submit" class="primary-btn" id="settings-submit-btn">決算月を保存</button>
+                  </div>
+                </form>
+              </section>
+            </div>
+          </div>
+
+          <div class="content-grid master-grid view-panel" data-section-panel="master" data-subview-panel="list">
+            <section class="panel">
+              <div class="panel-head">
+                <h3>生徒一覧</h3>
+                <span>登録済み生徒</span>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>生徒名</th>
+                    <th>クラス</th>
+                    <th>状態</th>
+                    <th>今月請求</th>
+                    <th>今月入金</th>
+                    <th>今月未収</th>
+                    <th>今月状況</th>
+                    <th>総入金</th>
+                    <th>総未収</th>
+                    <th>未入金月</th>
+                    <th>総合状況</th>
+                    <th>曜日</th>
+                    <th>保護者</th>
+                    <th>電話番号</th>
+                    <th>メールアドレス</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="student-table-body"></tbody>
+              </table>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>手動売上一覧</h3>
+                <span>通常月謝以外の売上</span>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>対象月</th>
+                    <th>名前</th>
+                    <th>内容</th>
+                    <th>金額</th>
+                    <th>備考</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="incidental-sale-table-body"></tbody>
+              </table>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>クラス一覧</h3>
+                <span>プルダウン候補</span>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>クラス名</th>
+                    <th>表示順</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="class-option-table-body"></tbody>
+              </table>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>教室一覧</h3>
+                <span>登録済み教室</span>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>教室名</th>
+                    <th>担当</th>
+                    <th>曜日</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="classroom-table-body"></tbody>
+              </table>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>先生一覧</h3>
+                <span>ログインアカウント一覧</span>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>先生名</th>
+                    <th>メールアドレス</th>
+                    <th>権限</th>
+                    <th>担当教室</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="teacher-table-body"></tbody>
+              </table>
+            </section>
+
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast"></div>
+    <script src="./app.js"></script>
+  </body>
+</html>
