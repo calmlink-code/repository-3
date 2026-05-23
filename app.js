@@ -1456,7 +1456,7 @@ function renderDashboard() {
   const paidAmount = billingMonth.reduce((sum, item) => sum + Number(item.paid || 0), 0);
   const previousOutstanding = previousOutstandingAmount(activeClassroomId, currentMonth());
   const currentOutstanding = Math.max(expectedAmount - paidAmount, 0);
-  const outstandingAmount = cumulativeOutstandingAmount(activeClassroomId, currentMonth());
+  const outstandingAmount = outstandingAmountForMonth(activeClassroomId);
 
   els.heroNote.innerHTML = `
     <span>本日の授業入力</span>
