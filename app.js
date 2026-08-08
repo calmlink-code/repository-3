@@ -2,7 +2,7 @@
 // Supabase設定 - ここを自分のプロジェクトに合わせてください
 // =====================================================================
 const SUPABASE_URL = "https://dlsgxabfadfzduklievq.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRsc2d4YWJmYWRmemR1a2xpZXZxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgzMDk1NTIsImV4cCI6MjA5Mzg4NTU1Mn0.Jj8GElqAp7x7jN_kDr5uv6YY1lGRxT9V4YdMlcfsBAc";
+const SUPABASE_ANON_KEY = "sb_publishable_WUwa8FsfFc36j8qDV3jErg_hA6l528l";
 
 // =====================================================================
 // Supabase クライアント初期化
