@@ -20,6 +20,7 @@ const HANDLE_DB_NAME = "robot-school-shared-system-db";
 const HANDLE_STORE_NAME = "app-settings";
 const HANDLE_KEY = "backup-file-handle";
 const BACKUP_LIMIT = 12;
+const MINOR_BILLING_DIFFERENCE_YEN = 10;
 const RECOMMENDED_BACKUP_PATH = "Supabase クラウドに自動保存";
 const STUDENT_LIST_SECTION_CONFIG = [
   { title: "勝川教室", classroomNames: ["勝川教室"], days: ["月", "火", "木", "金", "土"] },
@@ -140,6 +141,9 @@ function dbToStudent(row) {
     weekdays: Array.isArray(row.weekdays) ? row.weekdays : [],
     saturdaySlots: Array.isArray(row.saturday_slots) ? row.saturday_slots : [],
     startMonth: row.start_month || "",
+    pauseMonth: row.pause_month || "",
+    resumeMonth: row.resume_month || "",
+    attendanceDays: Number(row.attendance_days || 0),
   };
 }
 
@@ -157,6 +161,9 @@ function studentToDb(s) {
     weekdays: s.weekdays,
     saturday_slots: s.saturdaySlots,
     start_month: s.startMonth,
+    pause_month: s.pauseMonth || null,
+    resume_month: s.resumeMonth || null,
+    attendance_days: Number(s.attendanceDays || 0),
   };
 }
 
@@ -455,8 +462,8 @@ async function restoreBackupSnapshot(snapshotId) {
   if (!snapshot) { showToast("復元点が見つかりません"); return; }
   try {
     const parsed = JSON.parse(snapshot.payload);
-    await overwriteStateToSupabase(parsed, `復元: ${snapshot.label}`);
-    showToast("復元点からデータを戻しました");
+    const restored = await overwriteStateToSupabase(parsed, `復元: ${snapshot.label}`);
+    if (restored) showToast("復元点からデータを戻しました");
   } catch (_error) {
     showToast("復元に失敗しました");
   }
@@ -465,27 +472,50 @@ async function restoreBackupSnapshot(snapshotId) {
 async function overwriteStateToSupabase(nextState, saveLabel) {
   showLoadingOverlay(true);
   try {
-    // 全テーブルをnextStateで上書き
-    await Promise.all([
-      sb.from("class_options").delete().neq("id", ""),
-      sb.from("classrooms").delete().neq("id", ""),
-      sb.from("users").delete().neq("id", ""),
-      sb.from("students").delete().neq("id", ""),
-      sb.from("attendance").delete().neq("id", ""),
-      sb.from("billing").delete().neq("id", ""),
-      sb.from("handovers").delete().neq("id", ""),
-      sb.from("incidental_sales").delete().neq("id", ""),
-    ]);
-    await Promise.all([
-      nextState.classOptions.length && sb.from("class_options").insert(nextState.classOptions.map(classOptionToDb)),
-      nextState.classrooms.length && sb.from("classrooms").insert(nextState.classrooms.map(classroomToDb)),
-      nextState.users.length && sb.from("users").insert(nextState.users.map(userToDb)),
-      nextState.students.length && sb.from("students").insert(nextState.students.map(studentToDb)),
-      nextState.attendance.length && sb.from("attendance").insert(nextState.attendance.map(attendanceToDb)),
-      nextState.billing.length && sb.from("billing").insert(nextState.billing.map(billingToDb)),
-      nextState.handovers.length && sb.from("handovers").insert(nextState.handovers.map(handoverToDb)),
-      sb.from("settings").upsert({ id: "main", fiscal_closing_month: nextState.settings?.fiscalClosingMonth || 3 }),
-    ].filter(Boolean));
+    const importedState = {
+      settings: nextState?.settings || {},
+      classOptions: Array.isArray(nextState?.classOptions) ? nextState.classOptions : [],
+      classrooms: Array.isArray(nextState?.classrooms) ? nextState.classrooms : [],
+      users: Array.isArray(nextState?.users) ? nextState.users : [],
+      students: Array.isArray(nextState?.students) ? nextState.students : [],
+      attendance: Array.isArray(nextState?.attendance) ? nextState.attendance : [],
+      billing: Array.isArray(nextState?.billing) ? nextState.billing : [],
+      handovers: Array.isArray(nextState?.handovers) ? nextState.handovers : [],
+      incidentalSales: Array.isArray(nextState?.incidentalSales) ? nextState.incidentalSales : [],
+    };
+    const assertSuccess = (result, operation) => {
+      if (result?.error) throw new Error(`${operation}: ${result.error.message}`);
+    };
+
+    // 必要列がない状態で既存データを削除し始めない。
+    assertSuccess(
+      await sb.from("students").select("pause_month,resume_month,attendance_days").limit(0),
+      "Supabaseスキーマの確認（supabase-migration.sql を先に実行してください）",
+    );
+
+    // 子テーブルから順に削除し、外部キー制約による部分失敗を防ぐ。
+    for (const table of ["attendance", "billing", "handovers", "incidental_sales", "students", "users", "class_options", "classrooms"]) {
+      assertSuccess(await sb.from(table).delete().neq("id", ""), `${table} の削除`);
+    }
+
+    // 親テーブルから順に登録する。
+    const inserts = [
+      ["class_options", importedState.classOptions.map(classOptionToDb)],
+      ["classrooms", importedState.classrooms.map(classroomToDb)],
+      ["users", importedState.users.map(userToDb)],
+      ["students", importedState.students.map(studentToDb)],
+      ["attendance", importedState.attendance.map(attendanceToDb)],
+      ["billing", importedState.billing.map(billingToDb)],
+      ["handovers", importedState.handovers.map(handoverToDb)],
+      ["incidental_sales", importedState.incidentalSales.map(incidentalSaleToDb)],
+    ];
+    for (const [table, rows] of inserts) {
+      if (rows.length) assertSuccess(await sb.from(table).insert(rows), `${table} の登録`);
+    }
+    assertSuccess(
+      await sb.from("settings").upsert({ id: "main", fiscal_closing_month: importedState.settings.fiscalClosingMonth || 3 }),
+      "settings の登録",
+    );
     await loadStateFromSupabase();
     createBackupSnapshot(saveLabel);
     if (currentUser) {
@@ -493,16 +523,18 @@ async function overwriteStateToSupabase(nextState, saveLabel) {
       if (currentUser) renderApp();
     }
     renderSaveStatus();
+    return true;
   } catch (err) {
     console.error("上書き保存エラー:", err);
-    showToast("保存に失敗しました");
+    showToast(err.message || "保存に失敗しました");
+    return false;
   } finally {
     showLoadingOverlay(false);
   }
 }
 
 async function resetState() {
-  await overwriteStateToSupabase(seedState, "初期データに戻す");
+  return overwriteStateToSupabase(seedState, "初期データに戻す");
 }
 
 // =====================================================================
@@ -943,6 +975,29 @@ function isStudentActiveFromMonth(student, month) {
   return student.startMonth <= month;
 }
 
+function isStudentResumeBillingMonth(student, month) {
+  return Boolean(
+    student &&
+    student.resumeMonth &&
+    student.resumeMonth === addMonths(month, 1)
+  );
+}
+
+function isStudentBillableForMonth(student, month) {
+  if (!student) return false;
+  if (student.status === "体験") return false;
+  if (!isStudentActiveFromMonth(student, month)) return false;
+
+  const tuitionMonth = addMonths(month, 1);
+  const pauseMonth = student.pauseMonth || "";
+  const resumeMonth = student.resumeMonth || "";
+
+  if (student.status === "休会" && !pauseMonth) return false;
+  if (!pauseMonth) return true;
+  if (!resumeMonth) return tuitionMonth < pauseMonth;
+  return tuitionMonth < pauseMonth || tuitionMonth >= resumeMonth;
+}
+
 function fiscalYearForMonth(month) {
   const [yearText, monthText] = month.split("-");
   const year = Number(yearText);
@@ -962,11 +1017,18 @@ function addMonths(month, offset) {
 
 function previousMonth(month = currentMonth()) { return addMonths(month, -1); }
 
+function normalizeMinorBillingDifference(amount) {
+  const value = Number(amount || 0);
+  return value > 0 && value < MINOR_BILLING_DIFFERENCE_YEN ? 0 : value;
+}
+
 function trackedMonths() {
   const months = [
     ...state.billing.map((item) => item.month),
     ...state.incidentalSales.map((item) => item.month).filter(Boolean),
-    ...state.students.map((s) => s.startMonth).filter(Boolean),
+    ...state.students.map((student) => student.startMonth).filter(Boolean),
+    ...state.students.map((student) => student.pauseMonth ? previousMonth(student.pauseMonth) : "").filter(Boolean),
+    ...state.students.map((student) => student.resumeMonth ? previousMonth(student.resumeMonth) : "").filter(Boolean),
   ].sort();
   const firstMonth = months[0] || currentMonth();
   const lastMonth = currentMonth() > (months[months.length - 1] || "") ? currentMonth() : (months[months.length - 1] || currentMonth());
@@ -981,17 +1043,40 @@ function trackedMonths() {
 
 function monthlySalesRows() {
   return trackedMonths().map((month) => {
-    const students = state.students.filter((s) => s.status === "在籍" && matchClassroom(s.classroomId) && isStudentActiveFromMonth(s, month));
-    const summaries = students.map((s) => billingSummaryForStudent(s.id, month));
+    const students = state.students.filter((student) => (
+      matchClassroom(student.classroomId) &&
+      isStudentBillableForMonth(student, month)
+    ));
+    const summaries = students.map((student) => {
+      const rawPaid = getBillingEntriesByStudent(student.id)
+        .filter((item) => item.month === month)
+        .reduce((sum, item) => sum + Number(item.paid || 0), 0);
+      const billed = Number(student.tuition || 0);
+      return {
+        studentId: student.id,
+        studentName: student.name,
+        billed,
+        paid: rawPaid,
+        unpaid: normalizeMinorBillingDifference(Math.max(billed - rawPaid, 0)),
+      };
+    });
     const incidentalSales = state.incidentalSales.filter((item) => item.month === month);
     const incidentalAmount = incidentalSales.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    const unpaidDetails = summaries
+      .filter((item) => item.unpaid > 0)
+      .map((item) => ({
+        studentId: item.studentId,
+        studentName: item.studentName,
+        unpaid: item.unpaid,
+      }));
     return {
       month,
-      billed: summaries.reduce((sum, item) => sum + item.expected, 0) + incidentalAmount,
+      billed: summaries.reduce((sum, item) => sum + item.billed, 0) + incidentalAmount,
       paid: summaries.reduce((sum, item) => sum + item.paid, 0) + incidentalAmount,
-      unpaid: summaries.reduce((sum, item) => sum + item.outstanding, 0),
+      unpaid: summaries.reduce((sum, item) => sum + item.unpaid, 0),
       paidCount: summaries.filter((item) => item.paid > 0).length + incidentalSales.length,
-      unpaidCount: summaries.filter((item) => item.outstanding > 0).length,
+      unpaidCount: summaries.filter((item) => item.unpaid > 0).length,
+      unpaidDetails,
     };
   });
 }
@@ -999,11 +1084,18 @@ function monthlySalesRows() {
 function monthlySalesDetailRowsByMonth() {
   return Object.fromEntries(trackedMonths().map((month) => {
     const studentRows = state.students
-      .filter((s) => s.status === "在籍" && matchClassroom(s.classroomId) && isStudentActiveFromMonth(s, month))
-      .map((s) => {
-        const summary = billingSummaryForStudent(s.id, month);
-        return { month, category: "生徒月謝", name: s.name, content: summary.carryover > 0 ? `月謝（前月繰越 ${yen(summary.carryover)} を含む）` : "月謝", amount: summary.expected, isManual: false, manualLabel: "いいえ" };
-      }).filter((item) => item.amount > 0);
+      .filter((student) => matchClassroom(student.classroomId) && isStudentBillableForMonth(student, month))
+      .map((student) => {
+        const paid = getBillingEntriesByStudent(student.id)
+          .filter((item) => item.month === month)
+          .reduce((sum, item) => sum + Number(item.paid || 0), 0);
+        const tuition = Number(student.tuition || 0);
+        const content = isStudentResumeBillingMonth(student, month)
+          ? `${monthLabel(student.resumeMonth)}復会分 月謝`
+          : (paid > tuition ? `月謝（当月入金 ${yen(paid)}）` : "月謝");
+        return { month, category: "生徒月謝", name: student.name, content, amount: tuition, isManual: false, manualLabel: "いいえ" };
+      })
+      .filter((item) => item.amount > 0);
     const incidentalRows = state.incidentalSales
       .filter((item) => item.month === month && matchClassroom(item.classroomId || "all"))
       .map((item) => ({ month, category: "手動売上", name: item.name, content: item.content, amount: Number(item.amount || 0), isManual: true, manualLabel: "はい" }));
@@ -1014,12 +1106,17 @@ function monthlySalesDetailRowsByMonth() {
 function sheetNameForMonth(month) { return `${month.slice(0, 4)}-${month.slice(5, 7)}詳細`; }
 
 function unpaidMonthsForStudent(studentId) {
-  return trackedMonths().slice().reverse().filter((month) => billingSummaryForStudent(studentId, month).outstanding > 0);
+  return trackedMonths().slice().reverse()
+    .filter((month) => month <= currentMonth())
+    .filter((month) => billingSummaryForStudent(studentId, month).outstanding > 0);
 }
 
-function fiscalSalesRows() {
+function fiscalSalesRows(options = {}) {
+  const { upToMonth = null } = options;
   const fiscalMap = new Map();
-  monthlySalesRows().forEach((item) => {
+  monthlySalesRows()
+    .filter((item) => !upToMonth || item.month <= upToMonth)
+    .forEach((item) => {
     const key = fiscalYearForMonth(item.month);
     const summary = fiscalMap.get(key) || { fiscalYear: key, billed: 0, paid: 0, unpaid: 0, paidCount: 0, unpaidCount: 0 };
     summary.billed += item.billed;
@@ -1028,7 +1125,7 @@ function fiscalSalesRows() {
     summary.paidCount += item.paidCount;
     summary.unpaidCount += item.unpaidCount;
     fiscalMap.set(key, summary);
-  });
+    });
   return [...fiscalMap.values()].sort((a, b) => b.fiscalYear - a.fiscalYear);
 }
 
@@ -1049,16 +1146,29 @@ function getBillingEntriesByStudent(studentId) {
 }
 
 function previousCarryoverForStudent(studentId, month) {
-  const monthlyMap = new Map();
-  getBillingEntriesByStudent(studentId)
-    .filter((item) => item.month < month)
-    .forEach((item) => {
-      const summary = monthlyMap.get(item.month) || { billed: 0, paid: 0 };
-      summary.billed += Number(item.billed || 0);
-      summary.paid += Number(item.paid || 0);
-      monthlyMap.set(item.month, summary);
+  const student = getStudent(studentId);
+  if (!student) return 0;
+
+  const tuition = Number(student.tuition || 0);
+  const months = trackedMonths()
+    .slice()
+    .sort((a, b) => a.localeCompare(b))
+    .filter((itemMonth) => {
+      if (itemMonth >= month) return false;
+      const hasBillingHistory = getBillingEntriesByStudent(studentId).some((item) => item.month === itemMonth);
+      return hasBillingHistory || isStudentBillableForMonth(student, itemMonth);
     });
-  return [...monthlyMap.values()].reduce((sum, item) => sum + Math.max(item.billed - item.paid, 0), 0);
+
+  let carryover = 0;
+  months.forEach((itemMonth) => {
+    const paid = getBillingEntriesByStudent(studentId)
+      .filter((item) => item.month === itemMonth)
+      .reduce((sum, item) => sum + Number(item.paid || 0), 0);
+    const expected = (isStudentBillableForMonth(student, itemMonth) ? tuition : 0) + carryover;
+    carryover = Math.max(expected - paid, 0);
+  });
+
+  return normalizeMinorBillingDifference(carryover);
 }
 
 function previousUnpaidMonthsForStudent(studentId, month) {
@@ -1067,22 +1177,28 @@ function previousUnpaidMonthsForStudent(studentId, month) {
 
 function billingSummaryForStudent(studentId, month = currentMonth(), excludeBillingId = null) {
   const student = getStudent(studentId);
-  if (!isStudentActiveFromMonth(student, month)) {
-    return { tuition: Number(student?.tuition || 0), carryover: 0, expected: 0, billed: 0, paid: 0, outstanding: 0, status: "未開始" };
+  if (!student) {
+    return { tuition: 0, carryover: 0, expected: 0, billed: 0, paid: 0, outstanding: 0, status: "対象外" };
   }
-  const tuition = Number(student?.tuition || 0);
+  if (student.status === "在籍" && !isStudentActiveFromMonth(student, month)) {
+    return { tuition: Number(student.tuition || 0), carryover: 0, expected: 0, billed: 0, paid: 0, outstanding: 0, status: "未開始" };
+  }
+  if (!isStudentBillableForMonth(student, month)) {
+    return { tuition: Number(student.tuition || 0), carryover: 0, expected: 0, billed: 0, paid: 0, outstanding: 0, status: student.status || "対象外" };
+  }
+  const tuition = Number(student.tuition || 0);
   const carryover = previousCarryoverForStudent(studentId, month);
   const expected = tuition + carryover;
   const currentMonthEntries = getBillingEntriesByStudent(studentId).filter((item) => item.month === month && item.id !== excludeBillingId);
   const paid = currentMonthEntries.reduce((sum, item) => sum + Number(item.paid || 0), 0);
   const billed = currentMonthEntries.reduce((sum, item) => sum + Number(item.billed || 0), 0);
-  const outstanding = Math.max(expected - paid, 0);
+  const outstanding = normalizeMinorBillingDifference(Math.max(expected - paid, 0));
   const status = outstanding === 0 ? "完了" : paid === 0 ? "未収" : "一部入金";
   return { tuition, carryover, expected, billed, paid, outstanding, status };
 }
 
 function overallBillingSummaryForStudent(studentId) {
-  const months = trackedMonths();
+  const months = trackedMonths().filter((month) => month <= currentMonth());
   const monthlySummaries = months.map((month) => billingSummaryForStudent(studentId, month));
   const billed = monthlySummaries.reduce((sum, item) => sum + Number(item.expected || 0), 0);
   const paid = monthlySummaries.reduce((sum, item) => sum + Number(item.paid || 0), 0);
@@ -1093,33 +1209,38 @@ function overallBillingSummaryForStudent(studentId) {
   return { billed, paid, outstanding, paidCount, unpaidCount, status, unpaidMonths: unpaidMonthsForStudent(studentId) };
 }
 
+function billingStudentsForMonth(targetMonth = currentMonth(), classroomId = null) {
+  return state.students.filter((student) => (
+    (!classroomId || student.classroomId === classroomId) &&
+    matchClassroom(student.classroomId) &&
+    isStudentBillableForMonth(student, targetMonth)
+  ));
+}
+
 function expectedTuitionForMonth(classroomId = null) {
-  return state.students
-    .filter((s) => s.status === "在籍" && (!classroomId || s.classroomId === classroomId))
-    .reduce((sum, s) => sum + billingSummaryForStudent(s.id, currentMonth()).expected, 0);
+  return billingStudentsForMonth(currentMonth(), classroomId)
+    .reduce((sum, student) => sum + billingSummaryForStudent(student.id, currentMonth()).expected, 0);
 }
 
 function paidAmountForMonth(classroomId = null) {
-  return state.billing
-    .filter((item) => item.month === currentMonth() && (!classroomId || item.classroomId === classroomId))
-    .reduce((sum, item) => sum + Number(item.paid || 0), 0);
+  return billingStudentsForMonth(currentMonth(), classroomId)
+    .reduce((sum, student) => sum + billingSummaryForStudent(student.id, currentMonth()).paid, 0);
 }
 
 function outstandingAmountForMonth(classroomId = null) {
-  return Math.max(expectedTuitionForMonth(classroomId) - paidAmountForMonth(classroomId), 0);
+  return billingStudentsForMonth(currentMonth(), classroomId)
+    .reduce((sum, student) => sum + billingSummaryForStudent(student.id, currentMonth()).outstanding, 0);
 }
 
 function previousOutstandingAmount(classroomId = null, month = currentMonth()) {
   const targetMonth = previousMonth(month);
-  return state.students
-    .filter((s) => s.status === "在籍" && (!classroomId || s.classroomId === classroomId) && matchClassroom(s.classroomId) && isStudentActiveFromMonth(s, targetMonth))
-    .reduce((sum, s) => sum + billingSummaryForStudent(s.id, targetMonth).outstanding, 0);
+  return billingStudentsForMonth(targetMonth, classroomId)
+    .reduce((sum, student) => sum + billingSummaryForStudent(student.id, targetMonth).outstanding, 0);
 }
 
 function cumulativeOutstandingAmount(classroomId = null, month = currentMonth()) {
-  return state.students
-    .filter((s) => s.status === "在籍" && (!classroomId || s.classroomId === classroomId) && matchClassroom(s.classroomId) && isStudentActiveFromMonth(s, month))
-    .reduce((sum, s) => sum + overallBillingSummaryForStudent(s.id).outstanding, 0);
+  return billingStudentsForMonth(month, classroomId)
+    .reduce((sum, student) => sum + overallBillingSummaryForStudent(student.id).outstanding, 0);
 }
 
 function findBillingRecord(studentId, month) {
@@ -1638,7 +1759,7 @@ function renderBilling() {
 
 function renderSales() {
   const monthlyRows = monthlySalesRows();
-  const fiscalRows = fiscalSalesRows();
+  const fiscalRows = fiscalSalesRows({ upToMonth: currentMonth() });
   const currentMonthRow = monthlyRows.find((item) => item.month === currentMonth()) || { billed: 0, paid: 0, unpaid: 0, paidCount: 0, unpaidCount: 0 };
   const currentFiscalRow = fiscalRows.find((item) => item.fiscalYear === fiscalYearForMonth(currentMonth())) || { billed: 0, paid: 0, unpaid: 0, paidCount: 0, unpaidCount: 0 };
 
@@ -2042,7 +2163,10 @@ function startEditStudent(id) {
   els.studentForm.querySelector('select[name="classOptionId"]').value = item.classOptionId || "";
   els.studentForm.querySelector('select[name="status"]').value = item.status || "在籍";
   els.studentForm.querySelector('input[name="startMonth"]').value = item.startMonth || "";
+  els.studentForm.querySelector('input[name="pauseMonth"]').value = item.pauseMonth || "";
+  els.studentForm.querySelector('input[name="resumeMonth"]').value = item.resumeMonth || "";
   els.studentForm.querySelector('input[name="tuition"]').value = item.tuition || 0;
+  els.studentForm.querySelector('input[name="attendanceDays"]').value = item.attendanceDays || "";
   els.studentForm.querySelector('input[name="guardian"]').value = item.guardian || "";
   els.studentForm.querySelector('input[name="phone"]').value = item.phone || "";
   els.studentForm.querySelector('input[name="email"]').value = item.email || "";
@@ -2440,7 +2564,10 @@ function bindEvents() {
       classOptionId: formData.get("classOptionId"),
       status: formData.get("status"),
       startMonth: formData.get("startMonth"),
+      pauseMonth: formData.get("pauseMonth"),
+      resumeMonth: formData.get("resumeMonth"),
       tuition: Number(formData.get("tuition")),
+      attendanceDays: Number(formData.get("attendanceDays") || 0),
       guardian: formData.get("guardian"),
       phone: formData.get("phone"),
       email: formData.get("email"),
@@ -2495,9 +2622,11 @@ function bindEvents() {
     if (!file) return;
     const text = await file.text();
     try {
-      await overwriteStateToSupabase(JSON.parse(text), `JSON読込: ${file.name}`);
-      renderSaveStatus();
-      showToast("データを読み込みました");
+      const imported = await overwriteStateToSupabase(JSON.parse(text), `JSON読込: ${file.name}`);
+      if (imported) {
+        renderSaveStatus();
+        showToast("データを読み込みました");
+      }
     } catch (_error) {
       showToast("JSONの読み込みに失敗しました");
     }
@@ -2505,7 +2634,8 @@ function bindEvents() {
   });
 
   els.resetBtn.addEventListener("click", async () => {
-    await resetState();
+    const reset = await resetState();
+    if (!reset) return;
     setLoginOptions();
     if (currentUser) {
       currentUser = state.users.find((u) => u.id === currentUser.id) || state.users[0];
